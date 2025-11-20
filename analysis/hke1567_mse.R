@@ -20,15 +20,16 @@ tos <- mean(range(hke.idx[[1]])[c("startf","endf")]) # time of survey
 iar <- ac(range(hke.idx[[1]])["min"]:range(hke.idx[[1]])["max"]) # index age range
 
 # set up
+rng <- range(hke.stk)
 ny <- 5
+yrs <- rng["maxyear"]+0:(ny-1)
 its <- 25
 seed <- 123
-rng <- range(hke.stk)
 af <- 1 # advice frequency
-frefpt <- "fmax"
-estimator.lst <- list(split(1:4, 1:4))
-perceivedstock.lst <- list(split(1:4, 1:4))
-tracking <- FLQuant(dimnames=list(quant=c("om.f", "mp.f", paste("mp",frefpt, sep="."), "mp.catch_advice"), year=1:ny, iter=1:its))
+frefpt <- "f0.1"
+estimator.lst <- split(yrs, yrs)
+perceivedstock.lst <- split(yrs, yrs)
+tracking <- FLQuant(dimnames=list(quant=c("om.f", "mp.f", paste("mp",frefpt, sep="."), "mp.catch_advice"), year=yrs, iter=1:its))
 
 #====================================================================
 # OM conditioning based on stock assessment
@@ -46,13 +47,9 @@ fit <- sca(hke.stk, hke.idx, fmodel=fmod, qmodel=qmod)
 fit <- simulate(fit, its, seed=seed)
 pred <- predict(fit)
 om <- hke.stk + fit
-plot(om)
-# add oe to catches and indices using vmodel estimates??
-#fits <- simulate(fit, its, seed=1234, obserror=TRUE)
-#stk02 <- hke.stk + fits
-#idx02 <- hke.idx + fits
 om.sr <- fmle(as.FLSR(om, model="bevholt"), control = list(trace = 0))
 om.brp <- brp(FLBRP(om, sr=om.sr))
+plot(om)
 
 #====================================================================
 # Observation error model based on stock assessment estimates
@@ -87,31 +84,39 @@ c.oe[] <- pred$vmodel$catch[,1] # catch oe constant over time
 # Management procedure
 #====================================================================
 
+# estimator setup
+fmod <- ~s(age, k=3) + s(year, k=20)
+fmod <- ~s(age, k = 4) + s(year, k = 8) + te(age, year, k = c(3, 10))
+qmod <- defaultQmod(idx.oe)
+srmod <- defaultSRmod(stk.oe)
+n1mod <- defaultN1mod(stk.oe)
+vmod <- defaultVmod(stk.oe, idx.oe)
+
 #--------------------------------------------------------------------
 # Year 1, providing advice for year 2, data up to previous year (1-1)
 #--------------------------------------------------------------------
 
 ay <- rng["maxyear"]
+dy <- ac(ay - af)
 py <- ay + af
 # store om value for later analysis
-tracking["om.f",1] <- fbar(om)[,ac(ay-1)]
+tracking["om.f",ac(ay)] <- fbar(om)[,dy]
 
 # OEM
 # Observation model generates data up to year 1-1
 # Already sorted out in conditioning
-idx <- window(idx.oe, end=ay-1)
-stk <- window(stk.oe, end=ay-1)
+idx <- window(idx.oe, end=dy)
+stk <- window(stk.oe, end=dy)
 
 # MP
 # Estimator is sca with FLa4a
-fmod <- ~s(age, k=3) + s(year, k=20)
-estimator <- sca(stk, idx, fmodel=fmod, fit="MP")
+estimator <- sca(stk, idx, fmodel=fmod, qmodel=qmod, srmodel=srmod, n1model=n1mod, vmodel=vmod, fit="MP")
 stk0 <- stk + estimator
 # beverton and holt stock recruitment is fitted every year
-sr0 <- fmle(as.FLSR(stk0, model="bevholt"), control = list(trace = 0))
+sr0 <- fmle(as.FLSR(window(stk0, start=2015), model="geomean"), control = list(trace = 0))
 # HCR is fmax as target, also estimated every year
 ftrg <- refpts(brp(FLBRP(stk0, sr0)))[frefpt, "harvest"]
-# Projects for 2 years
+# Projection
 yrs <- c(ay:py)
 ctrl <- fwdControl(list(year=yrs, value=ftrg, quant="fbar"))
 stk_fwd <- fwdWindow(stk0, end=py)
@@ -123,20 +128,21 @@ catch_advice <- catch(stk_fwd)[,ac(py)]
 # No implementation model
 
 # Update tracking matrix and lists
-tracking["mp.f",1] <- fbar(stk0)[,ac(ay-1)]
-tracking[paste("mp",frefpt, sep="."),1] <- ftrg
-tracking["mp.catch_advice",1] <- catch_advice
-estimator.lst[[1]] <- fit
-perceivedstock.lst[[1]] <- stk0
+tracking["mp.f",ac(ay)] <- fbar(stk0)[,dy]
+tracking[paste("mp",frefpt, sep="."),ac(ay)] <- ftrg
+tracking["mp.catch_advice",ac(ay)] <- catch_advice
+estimator.lst[[ac(ay)]] <- fit
+perceivedstock.lst[[ac(ay)]] <- stk0
 
 #--------------------------------------------------------------------
 # Year 2, providing advice for year 3, data up to previous year (2-1)
 #--------------------------------------------------------------------
 
 ay <- ay + 1
+dy <- ac(ay - af)
 py <- ay + af
 # store om value for later analysis
-tracking["om.f",2] <- fbar(om)[,ac(ay-1)]
+tracking["om.f",ac(ay)] <- fbar(om)[,dy]
 
 # Update OM with previous decision
 ctrl <- fwdControl(list(year=ay, value=catch_advice, quant="catch"))
@@ -149,10 +155,9 @@ idx <- window(idx.oe, end=ay-1)
 stk <- window(stk.oe, end=ay-1)
 
 # MP
-fmod <- ~s(age, k=3) + s(year, k=20)
-estimator <- sca(stk, idx, fmodel=fmod, fit="MP")
+estimator <- sca(stk, idx, fmodel=fmod, qmodel=qmod, srmodel=srmod, n1model=n1mod, vmodel=vmod, fit="MP")
 stk0 <- stk2 <- stk + estimator
-sr0 <- fmle(as.FLSR(stk0, model="bevholt"), control = list(trace = 0))
+sr0 <- fmle(as.FLSR(window(stk0, start=2015), model="geomean"), control = list(trace = 0))
 ftrg <- refpts(brp(FLBRP(stk0, sr0)))[frefpt, "harvest"]
 yrs <- c(ay:py)
 ctrl <- fwdControl(list(year=yrs, value=ftrg, quant="fbar"))
@@ -163,20 +168,21 @@ catch_advice <- catch(stk_fwd)[,ac(py)]
 # IEM
 
 # Update tracking matrix
-tracking["mp.f",2] <- fbar(stk0)[,ac(ay-1)]
-tracking[paste("mp",frefpt, sep="."),2] <- ftrg
-tracking["mp.catch_advice",2] <- catch_advice
-estimator.lst[[2]] <- fit
-perceivedstock.lst[[2]] <- stk0
+tracking["mp.f",ac(ay)] <- fbar(stk0)[,dy]
+tracking[paste("mp",frefpt, sep="."),ac(ay)] <- ftrg
+tracking["mp.catch_advice",ac(ay)] <- catch_advice
+estimator.lst[[ac(ay)]] <- fit
+perceivedstock.lst[[ac(ay)]] <- stk0
 
 #--------------------------------------------------------------------
 # Year 3, providing advice for year 4, data up to previous year (3-1)
 #--------------------------------------------------------------------
 
 ay <- ay + 1
+dy <- ac(ay - af)
 py <- ay + af
 # store om value for later analysis
-tracking["om.f",3] <- fbar(om)[,ac(ay-1)]
+tracking["om.f",ac(ay)] <- fbar(om)[,dy]
 
 # Update OM with previous decision
 ctrl <- fwdControl(list(year=ay, value=catch_advice, quant="catch"))
@@ -184,18 +190,17 @@ om <- fwdWindow(om, end=ay)
 om <- fwd(om, control=ctrl, sr=om.sr)
 
 # OEM
-idx0 <- (stock.n(om)[,ac(ay-1)] * exp(-(harvest(om)[,ac(ay-1)]+m(om)[,ac(ay-1)])*tos))[iar] * index.q(idx.oe[[1]])[,ac(ay-1)]
-index(idx.oe[[1]])[,ac(ay-1)] <- exp(log(idx0) + rnorm(its, 0, sqrt(q.oe[,ac(ay-1)])))
+idx0 <- (stock.n(om)[,dy] * exp(-(harvest(om)[,dy]+m(om)[,dy])*tos))[iar] * index.q(idx.oe[[1]])[,dy]
+index(idx.oe[[1]])[,dy] <- exp(log(idx0) + rnorm(its, 0, sqrt(q.oe[,dy])))
 idx <- window(idx.oe, end=ay-1)
 
-stk <- window(om, end=ac(ay-1))
-stk[,ac(ay-1)]@catch.n <- exp(log(stk[,ac(ay-1)]@catch.n) + rnorm(its, 0, sqrt(c.oe[,ac(ay-1)])))
+stk <- window(om, end=dy)
+stk[,dy]@catch.n <- exp(log(stk[,dy]@catch.n) + rnorm(its, 0, sqrt(c.oe[,dy])))
 
 # MP
-fmod <- ~s(age, k=3) + s(year, k=21)
-estimator <- sca(stk, idx, fmodel=fmod, fit="MP")
+estimator <- sca(stk, idx, fmodel=fmod, qmodel=qmod, srmodel=srmod, n1model=n1mod, vmodel=vmod, fit="MP")
 stk0 <- stk3 <- stk + estimator
-sr0 <- fmle(as.FLSR(stk0, model="bevholt"), control = list(trace = 0))
+sr0 <- fmle(as.FLSR(window(stk0, start=2015), model="geomean"), control = list(trace = 0))
 ftrg <- refpts(brp(FLBRP(stk0, sr0)))[frefpt, "harvest"]
 yrs <- c(ay:py)
 ctrl <- fwdControl(list(year=yrs, value=ftrg, quant="fbar"))
@@ -206,20 +211,21 @@ catch_advice <- catch(stk_fwd)[,ac(py)]
 # IEM
 
 # Update tracking matrix
-tracking["mp.f",3] <- fbar(stk0)[,ac(ay-1)]
-tracking[paste("mp",frefpt, sep="."),3] <- ftrg
-tracking["mp.catch_advice",3] <- catch_advice
-estimator.lst[[3]] <- fit
-perceivedstock.lst[[3]] <- stk0
+tracking["mp.f",ac(ay)] <- fbar(stk0)[,dy]
+tracking[paste("mp",frefpt, sep="."),ac(ay)] <- ftrg
+tracking["mp.catch_advice",ac(ay)] <- catch_advice
+estimator.lst[[ac(ay)]] <- fit
+perceivedstock.lst[[ac(ay)]] <- stk0
 
 #--------------------------------------------------------------------
 # Year 4, providing advice for year 5, data up to previous year (4-1)
 #--------------------------------------------------------------------
 
 ay <- ay + 1
+dy <- ac(ay - af)
 py <- ay + af
 # store om value for later analysis
-tracking["om.f",4] <- fbar(om)[,ac(ay-1)]
+tracking["om.f",ac(ay)] <- fbar(om)[,dy]
 
 # Update OM with previous decision
 ctrl <- fwdControl(list(year=ay, value=catch_advice, quant="catch"))
@@ -227,18 +233,17 @@ om <- fwdWindow(om, end=ay)
 om <- fwd(om, control=ctrl, sr=om.sr)
 
 # OEM
-idx0 <- (stock.n(om)[,ac(ay-1)] * exp(-(harvest(om)[,ac(ay-1)]+m(om)[,ac(ay-1)])*tos))[iar] * index.q(idx.oe[[1]])[,ac(ay-1)]
-index(idx.oe[[1]])[,ac(ay-1)] <- exp(log(idx0) + rnorm(its, 0, sqrt(q.oe[,ac(ay-1)])))
+idx0 <- (stock.n(om)[,dy] * exp(-(harvest(om)[,dy]+m(om)[,dy])*tos))[iar] * index.q(idx.oe[[1]])[,dy]
+index(idx.oe[[1]])[,dy] <- exp(log(idx0) + rnorm(its, 0, sqrt(q.oe[,dy])))
 idx <- window(idx.oe, end=ay-1)
 
-stk <- window(om, end=ac(ay-1))
-stk[,ac(ay-1)]@catch.n <- exp(log(stk[,ac(ay-1)]@catch.n) + rnorm(its, 0, sqrt(c.oe[,ac(ay-1)])))
+stk <- window(om, end=dy)
+stk[,dy]@catch.n <- exp(log(stk[,dy]@catch.n) + rnorm(its, 0, sqrt(c.oe[,dy])))
 
 # MP
-fmod <- ~s(age, k=3) + s(year, k=21)
-estimator <- sca(stk, idx, fmodel=fmod, fit="MP")
+estimator <- sca(stk, idx, fmodel=fmod, qmodel=qmod, srmodel=srmod, n1model=n1mod, vmodel=vmod, fit="MP")
 stk0 <- stk4 <- stk + estimator
-sr0 <- fmle(as.FLSR(stk0, model="bevholt"), control = list(trace = 0))
+sr0 <- fmle(as.FLSR(window(stk0, start=2015), model="geomean"), control = list(trace = 0))
 ftrg <- refpts(brp(FLBRP(stk0, sr0)))[frefpt, "harvest"]
 yrs <- c(ay:py)
 ctrl <- fwdControl(list(year=yrs, value=ftrg, quant="fbar"))
@@ -249,20 +254,21 @@ catch_advice <- catch(stk_fwd)[,ac(py)]
 # IEM
 
 # Update tracking matrix
-tracking["mp.f",4] <- fbar(stk0)[,ac(ay-1)]
-tracking[paste("mp",frefpt, sep="."),4] <- ftrg
-tracking["mp.catch_advice",4] <- catch_advice
-estimator.lst[[4]] <- fit
-perceivedstock.lst[[4]] <- stk0
+tracking["mp.f",ac(ay)] <- fbar(stk0)[,dy]
+tracking[paste("mp",frefpt, sep="."),ac(ay)] <- ftrg
+tracking["mp.catch_advice",ac(ay)] <- catch_advice
+estimator.lst[[ac(ay)]] <- fit
+perceivedstock.lst[[ac(ay)]] <- stk0
 
 #--------------------------------------------------------------------
 # Year 5
 #--------------------------------------------------------------------
 
 ay <- ay + 1
+dy <- ac(ay - af)
 py <- ay + af
 # store om value for later analysis
-tracking["om.f",5] <- fbar(om)[,ac(ay-1)]
+tracking["om.f",ac(ay)] <- fbar(om)[,dy]
 
 # Update OM with previous decision
 ctrl <- fwdControl(list(year=ay, value=catch_advice, quant="catch"))
